@@ -1,0 +1,385 @@
+/* =========================================================
+   BUKU KAS PAGUYUBAN TIRTO WENING — REKAP OTOMATIS SHEET (v4)
+   6 tab: Data Warga, Iuran Rutin, Iuran Insidental,
+   Buku Kas, Laporan Bulanan, Rekap Keseluruhan.
+   Semua tab diset cetak A4 landscape + pas lebar.
+   Uji dulu: pilih fungsi "ujiCoba" lalu klik Run.
+   ========================================================= */
+
+var ORG = "PAGUYUBAN TIRTO WENING";
+var SPREADSHEET_ID = "";
+
+var NS = {
+  warga: "Data Warga",
+  rutin: "Iuran Rutin",
+  insidental: "Iuran Insidental",
+  kas: "Buku Kas",
+  laporan: "Laporan Bulanan",
+  rekap: "Rekap Keseluruhan"
+};
+var BLN = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des"];
+var BLN_PANJANG = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
+var W = { judul:"#0b241a", header:"#155238", putih:"#ffffff", total:"#e9a83a", garis:"#c9bd99", emas:"#b97e14" };
+
+function getSS(){
+  var ss = null;
+  try{ ss = SpreadsheetApp.getActiveSpreadsheet(); }catch(err){}
+  if(!ss && SPREADSHEET_ID){
+    try{ ss = SpreadsheetApp.openById(SPREADSHEET_ID); }catch(err){}
+  }
+  if(!ss) throw new Error("Spreadsheet tidak ditemukan. Buat script dari menu Ekstensi spreadsheet, atau isi SPREADSHEET_ID.");
+  return ss;
+}
+
+function doPost(e){
+  try{
+    if(!e || !e.postData || !e.postData.contents) throw new Error("Data tidak diterima (postData kosong).");
+    var data = JSON.parse(e.postData.contents);
+    if(!data || !Array.isArray(data.warga) || data.warga.length===0) throw new Error("Struktur data tidak dikenali.");
+    data.transaksi = data.transaksi || [];
+    data.saldoAwal = data.saldoAwal || 0;
+    PropertiesService.getScriptProperties().setProperty("SNAPSHOT", JSON.stringify(data));
+    var ss = getSS();
+    renderWarga(ss, data);
+    renderRutin(ss, data);
+    renderInsidental(ss, data);
+    renderBukuKas(ss, data);
+    renderLaporan(ss, data);
+    renderRekap(ss, data);
+    buangSheetKosong(ss);
+    return json({ ok:true, pesan:"Rekap berhasil diperbarui." });
+  }catch(err){
+    return json({ ok:false, pesan:String(err && err.message || err) });
+  }
+}
+
+function doGet(){
+  try{
+    var snap = PropertiesService.getScriptProperties().getProperty("SNAPSHOT");
+    return json({ ok:true, data: snap ? JSON.parse(snap) : null });
+  }catch(err){
+    return json({ ok:false, pesan:String(err && err.message || err) });
+  }
+}
+
+function json(o){
+  return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON);
+}
+
+/* ---------- Uji dari editor ---------- */
+function ujiCoba(){
+  var tahun = new Date().getFullYear();
+  var data = {
+    tarifRutin: 20000, saldoAwal: 250000, warga: [], rutin: {},
+    insidental: [ { id:1, nama:"Contoh: Perbaikan Lampu Jalan", nominal:50000, tanggal:tahun+"-08-08", dibayar:[1,2,3,4,5] } ],
+    transaksi: [
+      { id:2, tanggal:tahun+"-08-02", uraian:"Donasi kotak amal", jenis:"masuk", nominal:150000 },
+      { id:3, tanggal:tahun+"-08-05", uraian:"Pembelian alat kebersihan", jenis:"keluar", nominal:85000 }
+    ]
+  };
+  for(var i=1;i<=43;i++) data.warga.push({no:i, nama:"Warga "+pad2(i)});
+  data.rutin[tahun] = { "0":[1,2,3], "1":[1,2,3,4,5] };
+  var ss = getSS();
+  renderWarga(ss, data);
+  renderRutin(ss, data);
+  renderInsidental(ss, data);
+  renderBukuKas(ss, data);
+  renderLaporan(ss, data);
+  renderRekap(ss, data);
+  Logger.log("Uji coba berhasil - periksa 6 tab rekap di spreadsheet.");
+  try{ SpreadsheetApp.getUi().alert("Uji coba berhasil! Periksa 6 tab rekap yang terbentuk."); }catch(err){}
+}
+
+/* ---------- Utilitas ---------- */
+function rupiah(n){ return Math.round(n||0).toLocaleString("id-ID"); }
+function pad2(n){ return String(n).padStart(2,"0"); }
+function tgl(iso){ return /^\d{4}-\d{2}-\d{2}$/.test(iso||"") ? iso.split("-").reverse().join("/") : (iso||""); }
+function kosong(n){ var a=[]; for(var i=0;i<n;i++) a.push(""); return a; }
+
+function sheetKosong(ss, nama, warnaTab){
+  var sh = ss.getSheetByName(nama) || ss.insertSheet(nama);
+  sh.clear();
+  try{ sh.setTabColor(warnaTab); }catch(err){}
+  try{
+    var ps = sh.getPrintSettings();
+    try{ if(typeof ps.setPaperSize === "function" && SpreadsheetApp.PaperSize) ps.setPaperSize(SpreadsheetApp.PaperSize.A4); }catch(e1){}
+    try{
+      var LAN = SpreadsheetApp.PageOrientation ? SpreadsheetApp.PageOrientation.LANDSCAPE : null;
+      if(LAN){
+        if(typeof ps.setOrientation === "function") ps.setOrientation(LAN);
+        if(typeof ps.setPageOrientation === "function") ps.setPageOrientation(LAN);
+      }
+    }catch(e2){}
+    try{ if(typeof ps.setFitToWidth === "function") ps.setFitToWidth(1); }catch(e3){}
+    try{ if(typeof ps.setCenter === "function") ps.setCenter(true,false); }catch(e4){}
+    try{ if(typeof ps.setMargins === "function") ps.setMargins(0.5,0.4,0.5,0.4,0.3,0.3); }catch(e5){}
+    sh.setPrintSettings(ps);
+  }catch(err){}
+  return sh;
+}
+
+function buangSheetKosong(ss){
+  try{
+    var sah = [NS.warga, NS.rutin, NS.insidental, NS.kas, NS.laporan, NS.rekap];
+    ss.getSheets().forEach(function(sh){
+      if(sah.indexOf(sh.getName())===-1 && sh.getLastRow()===0 && sh.getLastColumn()===0 && ss.getSheets().length>1){
+        ss.deleteSheet(sh);
+      }
+    });
+  }catch(err){}
+}
+
+/* ---------- Hitungan bulanan ---------- */
+function hitungBulan(data, t, b){
+  var tarif = data.tarifRutin||0;
+  var key = t+"-"+pad2(b+1);
+  var rutin = (((((data.rutin||{})[t])||{})[b])||[]).length * tarif;
+  var inc=0, lain=0, keluar=0;
+  (data.insidental||[]).forEach(function(e){
+    if(String(e.tanggal||"").slice(0,7)===key) inc += (e.dibayar||[]).length*(e.nominal||0);
+  });
+  (data.transaksi||[]).forEach(function(x){
+    if(String(x.tanggal||"").slice(0,7)===key){
+      if(x.jenis==="masuk") lain += x.nominal||0; else keluar += x.nominal||0;
+    }
+  });
+  return { rutin:rutin, inc:inc, lain:lain, masuk:rutin+inc+lain, keluar:keluar };
+}
+
+function kumpulTahun(data){
+  var set = {};
+  for(var t in (data.rutin||{})) set[t]=1;
+  (data.insidental||[]).forEach(function(e){ var y=parseInt(String(e.tanggal||"").slice(0,4),10); if(y>1900) set[y]=1; });
+  (data.transaksi||[]).forEach(function(x){ var y=parseInt(String(x.tanggal||"").slice(0,4),10); if(y>1900) set[y]=1; });
+  set[new Date().getFullYear()]=1;
+  return Object.keys(set).map(Number).sort(function(a,b){return a-b;});
+}
+
+function saldoSebelumScript(data, t, b){
+  var s = data.saldoAwal||0;
+  var ys = kumpulTahun(data);
+  for(var i=0;i<ys.length;i++){
+    var y = ys[i];
+    if(y>t) break;
+    var mMax = (y===t)?b:12;
+    for(var m=0;m<mMax;m++){
+      var h = hitungBulan(data,y,m);
+      s += h.masuk-h.keluar;
+    }
+  }
+  return s;
+}
+
+/* ---------- Tab Data Warga ---------- */
+function renderWarga(ss, data){
+  var sh = sheetKosong(ss, NS.warga, "#1f7a4d");
+  var rows = [["No","Nama Warga"]];
+  data.warga.forEach(function(w){ rows.push([w.no, w.nama]); });
+  sh.getRange(1,1,rows.length,2).setValues(rows);
+  sh.getRange(1,1,1,2).setBackground(W.header).setFontColor(W.putih).setFontWeight("bold").setHorizontalAlignment("center");
+  sh.getRange(2,1,rows.length-1,2).setBorder(true,true,true,true,true,true,W.garis);
+  sh.getRange(2,1,rows.length-1,1).setHorizontalAlignment("center");
+  sh.setFrozenRows(1);
+  sh.setColumnWidths(1,2,[70,320]);
+}
+
+/* ---------- Tab Iuran Rutin ---------- */
+function renderRutin(ss, data){
+  var sh = sheetKosong(ss, NS.rutin, "#e9a83a");
+  var tarif = data.tarifRutin||0;
+  var n = data.warga.length;
+  var tahunList = Object.keys(data.rutin||{}).map(Number).filter(function(t){return t>1900;}).sort(function(a,b){return b-a;});
+  if(!tahunList.length) tahunList = [new Date().getFullYear()];
+
+  var rows = [], judul = [], header = [];
+  tahunList.forEach(function(t){
+    judul.push(rows.length);
+    rows.push([ORG+" - IURAN RUTIN TAHUN " + t + "  -  Tarif Rp" + rupiah(tarif) + "/bulan"].concat(kosong(15)));
+    header.push(rows.length);
+    rows.push(["No","Nama Warga"].concat(BLN,["Σ Bulan","Nominal"]));
+    var tot = [0,0,0,0,0,0,0,0,0,0,0,0], totBulan = 0;
+    data.warga.forEach(function(w){
+      var sel = [w.no, w.nama], c = 0;
+      for(var b=0;b<12;b++){
+        var ada = (((data.rutin[t]||{})[b])||[]).indexOf(w.no) > -1;
+        sel.push(ada ? "✓" : "");
+        if(ada){ c++; tot[b]++; }
+      }
+      totBulan += c;
+      sel.push(c, c*tarif);
+      rows.push(sel);
+    });
+    rows.push(["","TOTAL"].concat(tot,[totBulan, totBulan*tarif]));
+    rows.push(kosong(16));
+  });
+
+  sh.getRange(1,1,rows.length,16).setValues(rows);
+  judul.forEach(function(i){
+    sh.getRange(i+1,1).setFontSize(12).setFontWeight("bold").setFontColor(W.judul);
+  });
+  header.forEach(function(h){
+    sh.getRange(h+1,1,1,16).setBackground(W.header).setFontColor(W.putih).setFontWeight("bold").setHorizontalAlignment("center");
+    sh.getRange(h+1,1,n+2,16).setBorder(true,true,true,true,true,true,W.garis);
+    sh.getRange(h+2,3,n,13).setHorizontalAlignment("center");
+    sh.getRange(h+1,16,n+2,1).setNumberFormat('"Rp"#,##0').setHorizontalAlignment("right");
+    sh.getRange(h+n+2,1,1,16).setBackground(W.total).setFontWeight("bold");
+  });
+  sh.setColumnWidth(1,46); sh.setColumnWidth(2,190);
+  for(var c=3;c<=14;c++) sh.setColumnWidth(c,34);
+  sh.setColumnWidth(15,62); sh.setColumnWidth(16,120);
+}
+
+/* ---------- Tab Iuran Insidental ---------- */
+function renderInsidental(ss, data){
+  var sh = sheetKosong(ss, NS.insidental, "#c0472f");
+  var ev = data.insidental || [];
+  var rows = [["Tanggal","Kegiatan","Nominal per Warga","Jumlah Pembayar","Terkumpul","Warga yang Membayar"]];
+  if(ev.length===0){
+    rows.push(["-","Belum ada iuran insidental yang tercatat.",0,0,0,""]);
+  }else{
+    ev.forEach(function(x){
+      var dibayar = x.dibayar || [];
+      var daftar = dibayar.map(function(no){
+        var w = null;
+        data.warga.forEach(function(p){ if(p.no===no) w = p; });
+        return w ? pad2(no)+". "+w.nama : String(no);
+      }).join(", ");
+      rows.push([tgl(x.tanggal), x.nama, x.nominal, dibayar.length, dibayar.length*(x.nominal||0), daftar]);
+    });
+    var totOrang = ev.reduce(function(s,x){ return s+(x.dibayar||[]).length; },0);
+    var totDana  = ev.reduce(function(s,x){ return s+(x.dibayar||[]).length*(x.nominal||0); },0);
+    rows.push(["","TOTAL","",totOrang,totDana,""]);
+  }
+  sh.getRange(1,1,rows.length,6).setValues(rows);
+  sh.getRange(1,1,1,6).setBackground(W.header).setFontColor(W.putih).setFontWeight("bold").setHorizontalAlignment("center");
+  sh.getRange(2,1,rows.length-1,6).setBorder(true,true,true,true,true,true,W.garis);
+  sh.getRange(2,6,rows.length-1,1).setWrap(true).setVerticalAlignment("top");
+  sh.getRange(2,3,rows.length-1,1).setNumberFormat('"Rp"#,##0');
+  sh.getRange(2,5,rows.length-1,1).setNumberFormat('"Rp"#,##0');
+  sh.getRange(2,4,rows.length-1,1).setHorizontalAlignment("center");
+  if(ev.length) sh.getRange(rows.length,1,1,6).setBackground(W.total).setFontWeight("bold");
+  sh.setFrozenRows(1);
+  sh.setColumnWidths(1,6,[95,300,150,120,140,520]);
+}
+
+/* ---------- Tab Buku Kas ---------- */
+function renderBukuKas(ss, data){
+  var sh = sheetKosong(ss, NS.kas, "#155238");
+  var rows = [["Tanggal","Uraian / Rincian","Pemasukan","Pengeluaran","Saldo"]];
+  var saldo = data.saldoAwal||0;
+  rows.push(["","Saldo awal pencatatan","","",saldo]);
+  var totalIdx = [];
+  var now = new Date();
+  var ys = kumpulTahun(data);
+  ys.forEach(function(y){
+    var mEnd = (y<now.getFullYear()) ? 12 : ((y===now.getFullYear()) ? now.getMonth()+1 : 0);
+    for(var b=0;b<mEnd;b++){
+      var items = [];
+      (data.transaksi||[]).forEach(function(x){
+        if(String(x.tanggal||"").slice(0,7)===y+"-"+pad2(b+1)){
+          items.push({ iso:x.tanggal, r:[tgl(x.tanggal), x.uraian, x.jenis==="masuk"?(x.nominal||0):"", x.jenis==="keluar"?(x.nominal||0):""] });
+        }
+      });
+      (data.insidental||[]).forEach(function(e){
+        if(String(e.tanggal||"").slice(0,7)===y+"-"+pad2(b+1) && (e.dibayar||[]).length>0){
+          items.push({ iso:e.tanggal, r:[tgl(e.tanggal), "Iuran insidental: "+e.nama+" ("+(e.dibayar||[]).length+" warga)", (e.dibayar||[]).length*(e.nominal||0), ""] });
+        }
+      });
+      var rCount = ((((data.rutin||{})[y])||{})[b]||[]).length;
+      if(rCount>0){
+        var isoAkhir = y+"-"+pad2(b+1)+"-"+pad2(new Date(y,b+1,0).getDate());
+        items.push({ iso:isoAkhir, r:[tgl(isoAkhir), "Iuran rutin "+BLN_PANJANG[b]+" "+y+" ("+rCount+" warga)", rCount*(data.tarifRutin||0), ""] });
+      }
+      if(!items.length) return;
+      items.sort(function(a,c){ return a.iso<c.iso?-1:(a.iso>c.iso?1:0); });
+      var mIn=0, mOut=0;
+      items.forEach(function(it){
+        var masuk = it.r[2]===""?0:it.r[2];
+        var keluar = it.r[3]===""?0:it.r[3];
+        saldo += masuk-keluar; mIn+=masuk; mOut+=keluar;
+        rows.push([it.r[0], it.r[1], it.r[2], it.r[3], saldo]);
+      });
+      totalIdx.push(rows.length);
+      rows.push(["","TOTAL "+BLN_PANJANG[b].toUpperCase()+" "+y, mIn, mOut, saldo]);
+    }
+  });
+  sh.getRange(1,1,rows.length,5).setValues(rows);
+  sh.getRange(1,1,1,5).setBackground(W.header).setFontColor(W.putih).setFontWeight("bold").setHorizontalAlignment("center");
+  sh.getRange(2,1,rows.length-1,5).setBorder(true,true,true,true,true,true,W.garis);
+  sh.getRange(2,3,rows.length-1,3).setNumberFormat('"Rp"#,##0').setHorizontalAlignment("right");
+  sh.getRange(2,2,rows.length-1,1).setWrap(true);
+  totalIdx.forEach(function(i){ sh.getRange(i,1,1,5).setBackground(W.total).setFontWeight("bold"); });
+  sh.setFrozenRows(1);
+  sh.setColumnWidths(1,5,[95,470,140,140,150]);
+}
+
+/* ---------- Tab Laporan Bulanan ---------- */
+function renderLaporan(ss, data){
+  var sh = sheetKosong(ss, NS.laporan, "#0f3225");
+  var tahun = Number(data._tahunLaporan) || new Date().getFullYear();
+  var rows = [
+    [ORG].concat(kosong(7)),
+    ["LAPORAN KAS BULANAN TAHUN "+tahun].concat(kosong(7)),
+    ["43 KK - Saldo awal sebelum pencatatan: Rp"+rupiah(data.saldoAwal||0)].concat(kosong(7)),
+    kosong(8),
+    ["Bulan","Saldo Awal","Iuran Rutin","Iuran Insidental","Masuk Lainnya","Total Masuk","Pengeluaran","Saldo Akhir"]
+  ];
+  var saldo = saldoSebelumScript(data, tahun, 0);
+  var awalTahun = saldo;
+  var tR=0,tI=0,tL=0,tM=0,tK=0;
+  for(var b=0;b<12;b++){
+    var h = hitungBulan(data, tahun, b);
+    rows.push([BLN_PANJANG[b], saldo, h.rutin, h.inc, h.lain, h.masuk, h.keluar, saldo+h.masuk-h.keluar]);
+    tR+=h.rutin; tI+=h.inc; tL+=h.lain; tM+=h.masuk; tK+=h.keluar;
+    saldo += h.masuk-h.keluar;
+  }
+  rows.push(["JUMLAH "+tahun, awalTahun, tR, tI, tL, tM, tK, saldo]);
+  sh.getRange(1,1,rows.length,8).setValues(rows);
+  sh.getRange(1,1).setFontSize(13).setFontWeight("bold").setFontColor(W.judul);
+  sh.getRange(2,1).setFontSize(12).setFontWeight("bold").setFontColor(W.emas);
+  sh.getRange(3,1).setFontColor(W.emas).setFontStyle("italic").setFontSize(9);
+  sh.getRange(5,1,1,8).setBackground(W.header).setFontColor(W.putih).setFontWeight("bold").setHorizontalAlignment("center");
+  sh.getRange(6,1,12,8).setBorder(true,true,true,true,true,true,W.garis);
+  sh.getRange(6,2,13,7).setNumberFormat('"Rp"#,##0').setHorizontalAlignment("right");
+  sh.getRange(rows.length,1,1,8).setBackground(W.total).setFontWeight("bold");
+  sh.setFrozenRows(5);
+  sh.setColumnWidths(1,8,[120,130,120,130,120,130,130,140]);
+}
+
+/* ---------- Tab Rekap Keseluruhan ---------- */
+function renderRekap(ss, data){
+  var sh = sheetKosong(ss, NS.rekap, "#0f3225");
+  var tarif = data.tarifRutin || 0;
+  var ev = data.insidental || [];
+  var rows = [
+    [ORG].concat(kosong(5)),
+    ["REKAP KESELURUHAN IURAN WARGA - "+data.warga.length+" KK"].concat(kosong(5)),
+    ["Diperbarui otomatis: "+Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd MMMM yyyy HH:mm")].concat(kosong(5)),
+    kosong(6),
+    ["No","Nama Warga","Rutin (bulan)","Nominal Rutin","Insidental","TOTAL"]
+  ];
+  var tB=0, tR=0, tI=0;
+  data.warga.forEach(function(w){
+    var bln=0;
+    for(var t in (data.rutin||{})){
+      for(var b in data.rutin[t]){
+        if(((data.rutin[t][b])||[]).indexOf(w.no)>-1) bln++;
+      }
+    }
+    var inc = ev.reduce(function(s,x){ return s + (((x.dibayar||[]).indexOf(w.no)>-1) ? (x.nominal||0) : 0); },0);
+    tB+=bln; tR+=bln*tarif; tI+=inc;
+    rows.push([w.no, w.nama, bln, bln*tarif, inc, bln*tarif+inc]);
+  });
+  rows.push(["","JUMLAH",tB,tR,tI,tR+tI]);
+  sh.getRange(1,1,rows.length,6).setValues(rows);
+  sh.getRange(1,1).setFontSize(13).setFontWeight("bold").setFontColor(W.judul);
+  sh.getRange(2,1).setFontSize(12).setFontWeight("bold").setFontColor(W.emas);
+  sh.getRange(3,1).setFontColor(W.emas).setFontStyle("italic").setFontSize(9);
+  sh.getRange(5,1,1,6).setBackground(W.header).setFontColor(W.putih).setFontWeight("bold").setHorizontalAlignment("center");
+  sh.getRange(6,1,data.warga.length,6).setBorder(true,true,true,true,true,true,W.garis);
+  sh.getRange(6,3,data.warga.length,1).setHorizontalAlignment("center");
+  sh.getRange(5,4,data.warga.length+2,3).setNumberFormat('"Rp"#,##0').setHorizontalAlignment("right");
+  sh.getRange(rows.length,1,1,6).setBackground(W.total).setFontWeight("bold");
+  sh.setFrozenRows(5);
+  sh.setColumnWidths(1,6,[48,230,110,150,150,160]);
+}
